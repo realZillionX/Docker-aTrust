@@ -1,0 +1,26 @@
+#!/bin/bash
+set -u
+
+url="$*"
+printf '%s\n' "$url" >> /root/open-urls
+
+(
+	[ -n "${URLWIN:-}" ] && xmessage -buttons Copy:0,Close:1 "$url" && ( printf %s "$url" | xclip -i -selection clipboard )
+)&
+
+# 默认行为：只记录 URL，方便用户在宿主机打开。
+# 当环境变量 CHROMIUM 不为空时，认为用户希望在容器内处理跳转（用于 web 认证、atrust:// 协议唤起等）。
+if [ -n "${CHROMIUM:-}" ]; then
+	case "$url" in
+		http://*|https://*)
+			if command -v chromium-launcher >/dev/null 2>&1; then
+				chromium-launcher "$url" >/dev/null 2>&1 &
+			elif command -v chromium >/dev/null 2>&1; then
+				chromium --no-sandbox --disable-gpu --disable-dev-shm-usage "$url" >/dev/null 2>&1 &
+			elif command -v chromium-browser >/dev/null 2>&1; then
+				chromium-browser --no-sandbox --disable-gpu --disable-dev-shm-usage "$url" >/dev/null 2>&1 &
+			fi
+			exit 0
+			;;
+	esac
+fi

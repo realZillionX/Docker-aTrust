@@ -1,0 +1,21 @@
+#!/bin/bash
+set -eu
+
+browser_flags=(
+	--no-sandbox
+	--disable-gpu
+	--disable-dev-shm-usage
+	--no-first-run
+	--no-default-browser-check
+)
+
+if command -v chromium >/dev/null 2>&1; then
+	exec chromium "${browser_flags[@]}" "$@"
+fi
+
+if command -v chromium-browser >/dev/null 2>&1; then
+	exec chromium-browser "${browser_flags[@]}" "$@"
+fi
+
+echo "ERROR: Chromium is not installed." >&2
+exit 127
