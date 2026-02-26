@@ -1,6 +1,6 @@
 # Docker-aTrust（Ubuntu GUI + Chromium）
 
-本仓库基于 docker-easyconnect 的方法，构建一个带图形界面的 Ubuntu 容器，在容器内安装并运行图形界面版 aTrust，并将默认浏览器与 aTrust 的跳转浏览器统一设为 Chromium，便于完成 `cas.sii.edu.cn` 等页面的登录跳转。
+本仓库基于 [docker-easyconnect](https://github.com/docker-easyconnect/docker-easyconnect) 开发，构建一个带图形界面的 Ubuntu 容器，在容器内安装并运行图形界面版 aTrust，并将默认浏览器与 aTrust 的跳转浏览器统一设为 Chromium，便于完成 aTrust 浏览器登录页面的跳转。
 
 容器同时提供：
 
