@@ -95,9 +95,100 @@ start_danted() {
 	fi
 }
 
+tinyproxy_is_listening_8888() {
+	if command -v ss >/dev/null 2>&1; then
+		ss -lnt 2>/dev/null | grep -qE '[:.]8888[[:space:]]'
+		return $?
+	fi
+
+	if command -v netstat >/dev/null 2>&1; then
+		netstat -lnt 2>/dev/null | grep -qE '[:.]8888[[:space:]]'
+		return $?
+	fi
+
+	return 1
+}
+
+dump_tinyproxy_diagnostics() {
+	local tinyproxy_log_dir=/var/log/tinyproxy
+	local tinyproxy_run_dir=/var/run/tinyproxy
+
+	ls -ld "$tinyproxy_log_dir" "$tinyproxy_run_dir" 2>/dev/null >&2 || true
+	[ -f /etc/tinyproxy.conf ] && grep -nE '^(User|Group|Port|PidFile|LogFile|StartServers|MinSpareServers|MaxSpareServers|MaxClients|LogLevel)' /etc/tinyproxy.conf >&2 || true
+	[ -f /var/log/tinyproxy/tinyproxy.log ] && tail -n 80 /var/log/tinyproxy/tinyproxy.log >&2 || true
+	ps -ef | grep -E '[t]inyproxy' >&2 || true
+	ss -lntp 2>/dev/null | grep -E '[:.]8888[[:space:]]' >&2 || true
+}
+
+wait_tinyproxy_ready() {
+	local tries=20
+	while [ $tries -gt 0 ]; do
+		if pgrep -x tinyproxy >/dev/null 2>&1 && tinyproxy_is_listening_8888; then
+			return 0
+		fi
+		tries=$((tries - 1))
+		sleep 0.2
+	done
+	return 1
+}
+
 start_tinyproxy() {
+	local tinyproxy_log_dir=/var/log/tinyproxy
+	local tinyproxy_run_dir=/var/run/tinyproxy
+	local rc
+
 	open_port 8888
+
+	mkdir -p "$tinyproxy_log_dir" "$tinyproxy_run_dir" || {
+		echo "ERROR: Failed to create tinyproxy runtime directories." >&2
+		return 1
+	}
+	chown daemon:daemon "$tinyproxy_log_dir" "$tinyproxy_run_dir" || {
+		echo "ERROR: Failed to set tinyproxy runtime directory owner." >&2
+		ls -ld "$tinyproxy_log_dir" "$tinyproxy_run_dir" 2>/dev/null >&2 || true
+		return 1
+	}
+
+	echo "Starting tinyproxy on port 8888..."
 	tinyproxy -c /etc/tinyproxy.conf
+	rc=$?
+	if [ $rc -ne 0 ]; then
+		echo "ERROR: tinyproxy failed to start with /etc/tinyproxy.conf (exit $rc)." >&2
+		dump_tinyproxy_diagnostics
+		return $rc
+	fi
+
+	if ! wait_tinyproxy_ready; then
+		echo "ERROR: tinyproxy started but failed readiness checks on port 8888." >&2
+		dump_tinyproxy_diagnostics
+		killall tinyproxy 2>/dev/null || true
+		return 1
+	fi
+
+	echo "tinyproxy is ready on port 8888."
+	return 0
+}
+
+watch_tinyproxy_required() {
+	while sleep 2; do
+		if ! pgrep -x tinyproxy >/dev/null 2>&1; then
+			echo "ERROR: tinyproxy process is missing; port 8888 is mandatory. Stopping container." >&2
+			dump_tinyproxy_diagnostics
+			kill -TERM 1 2>/dev/null || true
+			sleep 1
+			kill -KILL 1 2>/dev/null || true
+			exit 1
+		fi
+
+		if ! tinyproxy_is_listening_8888; then
+			echo "ERROR: tinyproxy is not listening on 8888; port 8888 is mandatory. Stopping container." >&2
+			dump_tinyproxy_diagnostics
+			kill -TERM 1 2>/dev/null || true
+			sleep 1
+			kill -KILL 1 2>/dev/null || true
+			exit 1
+		fi
+	done
 }
 
 config_vpn_iptables() {
@@ -166,8 +257,7 @@ force_open_ports() {
 	}
 
 	wait_for_x() {
-		local tries=50
-		while [ $tries -gt 0 ]; do
+		x_ready_once() {
 			if command -v xprop >/dev/null 2>&1; then
 				DISPLAY="$DISPLAY" xprop -root >/dev/null 2>&1 && return 0
 			elif command -v xset >/dev/null 2>&1; then
@@ -175,10 +265,46 @@ force_open_ports() {
 			else
 				return 0
 			fi
+			return 1
+		}
+
+		local tries=50
+		while [ $tries -gt 0 ]; do
+			x_ready_once && return 0
 			tries=$((tries - 1))
 			sleep 0.1
 		done
 		return 1
+	}
+
+	cleanup_stale_vnc_display() {
+		local display="${DISPLAY:-:1}"
+		local display_num="${display#:}"
+		local x_lock="/tmp/.X${display_num}-lock"
+		local x_sock="/tmp/.X11-unix/X${display_num}"
+		local pidfile
+
+		[[ "$display_num" =~ ^[0-9]+$ ]] || return 0
+
+		# 若当前显示已可用，则不要误删真实 socket/lock。
+		if wait_for_x >/dev/null 2>&1; then
+			return 0
+		fi
+
+		if pgrep -af "Xtigervnc ${display}" >/dev/null 2>&1 || pgrep -af "Xvnc ${display}" >/dev/null 2>&1; then
+			return 0
+		fi
+
+		if [ -e "$x_lock" ] || [ -S "$x_sock" ]; then
+			echo "Cleaning stale VNC display artifacts for ${display}..." >&2
+			rm -f -- "$x_lock" "$x_sock" 2>/dev/null || true
+		fi
+
+		for pidfile in "${HOME:-/root}"/.vnc/*:"${display_num}".pid; do
+			[ -e "$pidfile" ] || continue
+			echo "Removing stale VNC pidfile: ${pidfile}" >&2
+			rm -f -- "$pidfile" 2>/dev/null || true
+		done
 	}
 
 	setup_desktop_shortcuts() {
@@ -251,20 +377,40 @@ EOF
 			tries=$((tries - 1))
 			sleep 0.5
 		done
+		echo "WARNING: pcmanfm desktop icons failed to start after retries." >&2
+		[ -f /tmp/pcmanfm-desktop.log ] && tail -n 50 /tmp/pcmanfm-desktop.log >&2 || true
 		return 1
 	}
 
 	start_tigervncserver() {
+		local rc
+
 		# 固定 VNC 密码（默认 password），避免每次重建/重启后随机变化。
 		# 如需自定义，显式传入环境变量 PASSWORD。
 		local vnc_password="${PASSWORD:-password}"
 		mkdir -p ~/.vnc
 		printf %s "$vnc_password" | tigervncpasswd -f > ~/.vnc/passwd
+		chmod 0600 ~/.vnc/passwd 2>/dev/null || true
 
 	VNC_SIZE="${VNC_SIZE:-1110x620}"
 
 	open_port 5901
+	cleanup_stale_vnc_display
 	tigervncserver "$DISPLAY" -geometry "$VNC_SIZE" -localhost no -passwd ~/.vnc/passwd -xstartup flwm
+	rc=$?
+	if [ $rc -ne 0 ]; then
+		echo "WARNING: tigervncserver failed to start on ${DISPLAY} (exit ${rc}), retrying after cleanup." >&2
+		cleanup_stale_vnc_display
+		tigervncserver "$DISPLAY" -geometry "$VNC_SIZE" -localhost no -passwd ~/.vnc/passwd -xstartup flwm
+		rc=$?
+		if [ $rc -ne 0 ]; then
+			echo "ERROR: tigervncserver failed to start on ${DISPLAY} after retry (exit ${rc})." >&2
+			ls -l /tmp/.X11-unix /tmp/.X1-lock 2>/dev/null >&2 || true
+			ls -l ~/.vnc 2>/dev/null >&2 || true
+			tail -n 80 ~/.vnc/*.log 2>/dev/null >&2 || true
+			return $rc
+		fi
+	fi
 	stalonetray -f 0 2> /dev/null &
 
 	start_desktop_icons
@@ -304,13 +450,17 @@ keep_pinging_url() {
 # container 再次运行时清除 /tmp 中的锁，使 container 能够反复使用。
 # 感谢 @skychan https://github.com/Hagb/docker-easyconnect/issues/4#issuecomment-660842149
 for f in /tmp/* /tmp/.*; do
-	[ "/tmp/.X11-unix" != "$f" ] && rm -rf -- "$f"
+	[ "/tmp/.X11-unix" != "$f" ] && [ "/tmp/." != "$f" ] && [ "/tmp/.." != "$f" ] && rm -rf -- "$f"
 done
 
 ulimit -n 1048576 # https://github.com/Hagb/docker-easyconnect/issues/245 @rikaunite
 forward_ports &
 start_danted &
-start_tinyproxy &
+if ! start_tinyproxy; then
+	echo "ERROR: tinyproxy failed and port 8888 is mandatory." >&2
+	exit 1
+fi
+watch_tinyproxy_required &
 config_vpn_iptables &
 force_open_ports &
 keep_pinging &
