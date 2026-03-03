@@ -6,7 +6,7 @@
 
 - VNC 桌面（端口 `5901`，密码固定为 `password`）。
 - SOCKS5 代理（端口 `1080`，推荐用于 Proxifier 分流）。
-- HTTP 代理（端口 `8888`，可选）。
+- HTTP 代理（端口 `8888`，必选）。
 - aTrust 本地 Web 登录端口（端口 `54631`，用于 aTrust 拉起浏览器的登录流程）。
 
 ## 0. 前置条件
@@ -75,6 +75,7 @@ docker run -d --name atrust-ubuntu \
 - `-e CHROMIUM=1`：启用容器内 Chromium 自动拉起与跳转处理（包括 aTrust 的登录跳转）。
 - `-e URLWIN=1`：当 aTrust 试图打开 URL 时，额外弹窗提示并把 URL 写入剪贴板（排障时很有用）。
 - `-v $HOME/.atrust-data:/root`：持久化 `/root`（包括 aTrust 登录信息、Chromium 配置等）。
+- `-p 8888:8888`：`8888` 为必选 HTTP 代理端口，若 tinyproxy 启动失败或运行中丢失监听，容器会退出。
 
 ## 3. 通过 VNC 打开桌面并登录 aTrust
 
@@ -95,6 +96,11 @@ docker run -d --name atrust-ubuntu \
 
 - 地址：`127.0.0.1`
 - 端口：`1080`
+
+同时会暴露一个必选的 HTTP 代理：
+
+- 地址：`127.0.0.1`
+- 端口：`8888`
 
 ### 4.1 添加代理服务器
 
@@ -152,6 +158,18 @@ docker exec atrust-ubuntu sysctl -n net.ipv4.conf.utun7.route_localnet
 
 ```bash
 docker exec atrust-ubuntu tail -n 200 /tmp/pcmanfm-desktop.log
+```
+
+### 5.4 `8888` 代理不可用导致容器退出
+
+`8888` 是必选代理端口。容器启动时会严格检查 tinyproxy，运行中若 tinyproxy 进程消失或 `8888` 不再监听，容器会主动退出，避免出现“VPN 在线但 HTTP 代理已失效”的假健康状态。
+
+可用以下命令排障：
+
+```bash
+docker logs --tail 200 atrust-ubuntu
+docker exec atrust-ubuntu ss -lntp | grep ':8888'
+docker exec atrust-ubuntu tail -n 200 /var/log/tinyproxy/tinyproxy.log
 ```
 
 ## 免责声明

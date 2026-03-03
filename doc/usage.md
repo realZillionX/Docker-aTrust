@@ -86,10 +86,20 @@
 
 socks5 和 http 代理会分别在容器的 `1080` 和 `8888` 端口开启，VPN 登录后可用它们来访问 VPN 的网络。这些端口可用 `-p` 参数转发到宿主机的 `127.0.0.1` 上或对外开放（不推荐，对外开放 http、socks5 端口不安全）。
 
+其中 `8888` 是必选端口：容器启动时会检查 tinyproxy 是否成功启动并监听 `8888`；运行中若 tinyproxy 进程消失或 `8888` 监听丢失，容器会退出并返回非零状态码。
+
 浏览器和一些其他程序可使用这些代理，例如在 python requests 中使用：
 
 ```python3
 requests.get('https://www.hao123.com', proxies={'http': '127.0.0.1:8888'})
+```
+
+排障时可检查：
+
+```bash
+docker logs --tail 200 容器名
+docker exec 容器名 ss -lntp | grep ':8888'
+docker exec 容器名 tail -n 200 /var/log/tinyproxy/tinyproxy.log
 ```
 
 ### ip forward
@@ -186,4 +196,3 @@ xhost -LOCAL:root
 ``` bash
 docker run --rm --device /dev/net/tun --cap-add NET_ADMIN -ti -e PASSWORD=xxxx -v $HOME/.ecdata:/root -p 127.0.0.1:5901:5901 -p 127.0.0.1:1080:1080 -p 127.0.0.1:8888:8888 hagb/docker-easyconnect
 ```
-
