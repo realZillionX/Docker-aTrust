@@ -312,17 +312,41 @@ force_open_ports() {
 		mkdir -p "$desktop_dir"
 
 		if [ -x /usr/share/sangfor/aTrust/aTrustTray ]; then
+			local atrust_launcher="/usr/local/bin/atrust-launcher"
+			cat > "$atrust_launcher" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+daemon_bin="/usr/share/sangfor/aTrust/resources/bin/aTrustAgent"
+daemon_sh="/usr/share/sangfor/aTrust/resources/shell/aTrustDaemon.sh"
+tray_bin="/usr/share/sangfor/aTrust/aTrustTray"
+
+if [ -x "$daemon_sh" ] && [ -x "$daemon_bin" ]; then
+	if ! pgrep -f "${daemon_bin} --plugin plugin-daemon" >/dev/null 2>&1; then
+		"$daemon_sh" start >/tmp/atrust-daemon-start.log 2>&1 || true
+		sleep 2
+	fi
+fi
+
+exec "$tray_bin" --no-sandbox --disable-gpu "$@"
+EOF
+			chmod 0755 "$atrust_launcher"
+
 			cat > "$desktop_dir/aTrust.desktop" <<'EOF'
 [Desktop Entry]
 Type=Application
 Version=1.0
 Name=aTrust
-Exec=/usr/share/sangfor/aTrust/aTrustTray --no-sandbox
+Exec=/usr/local/bin/atrust-launcher
 Icon=/usr/share/sangfor/aTrust/resources/aTrust.png
 Terminal=false
 Categories=Network;
 EOF
 			chmod 0755 "$desktop_dir/aTrust.desktop"
+
+			if [ -f /usr/share/applications/cn.com.sangfor.atrust.desktop ]; then
+				sed -i 's#^Exec=.*#Exec=/usr/local/bin/atrust-launcher#' /usr/share/applications/cn.com.sangfor.atrust.desktop
+			fi
 		fi
 
 		local chromium_cmd=""

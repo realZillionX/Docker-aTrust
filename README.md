@@ -136,6 +136,10 @@ docker run -d --name atrust-ubuntu `
 4. 双击 `aTrust`，按你的学校/单位配置登录。
 5. aTrust 需要网页认证时会自动拉起 Chromium 打开跳转页面（例如 `cas.sii.edu.cn`）。
 
+> **请从桌面图标启动 `aTrust`。** 仓库内置的桌面入口会先补起 `aTrustDaemon`，再打开 `Tray`。如果你直接运行 `/usr/share/sangfor/aTrust/aTrustTray`，可能会看到 “The core service was started，causing some functions to be abnormal” 之类的提示。
+
+> **不要依赖软件内的 `Restart Service` 按钮。** 这个容器不运行 `systemd`，而 `aTrust` 安装包默认尝试通过 `systemctl` 管理后台服务；因此在容器环境里，按钮本身不能作为可靠的恢复手段。正确做法是重新从桌面图标启动，或在容器内手动执行 `/usr/share/sangfor/aTrust/resources/shell/aTrustDaemon.sh start`。
+
 如果你仍然需要手动复制 URL，优先检查：
 
 - 运行容器时是否设置了 `-e CHROMIUM=1`。
