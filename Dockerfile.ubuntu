@@ -1,0 +1,124 @@
+ARG UBUNTU_ARCHIVE_MIRROR=http://archive.ubuntu.com/ubuntu
+ARG UBUNTU_SECURITY_MIRROR=http://security.ubuntu.com/ubuntu
+ARG UBUNTU_PORTS_MIRROR=http://ports.ubuntu.com/ubuntu-ports
+
+FROM ubuntu:18.04 AS build
+
+ARG UBUNTU_ARCHIVE_MIRROR
+ARG UBUNTU_SECURITY_MIRROR
+ARG UBUNTU_PORTS_MIRROR
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN sed -i \
+        -e "s|http://archive.ubuntu.com/ubuntu|${UBUNTU_ARCHIVE_MIRROR}|g" \
+        -e "s|http://security.ubuntu.com/ubuntu|${UBUNTU_SECURITY_MIRROR}|g" \
+        -e "s|http://ports.ubuntu.com/ubuntu-ports|${UBUNTU_PORTS_MIRROR}|g" \
+        /etc/apt/sources.list
+
+RUN apt-get -o Acquire::Retries=5 update && \
+    apt-get -o Acquire::Retries=5 install -y --no-install-recommends --no-install-suggests \
+        build-essential ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
+
+RUN mkdir -p /out/usr/local/lib
+
+COPY fake-hwaddr /tmp/src/fake-hwaddr/
+COPY fake-getlogin /tmp/src/fake-getlogin/
+
+RUN make -C /tmp/src/fake-hwaddr clean all && \
+    install -D -m 0755 /tmp/src/fake-hwaddr/fake-hwaddr.so /out/usr/local/lib/fake-hwaddr.so && \
+    make -C /tmp/src/fake-getlogin clean all && \
+    install -D -m 0755 /tmp/src/fake-getlogin/fake-getlogin.so /out/usr/local/lib/fake-getlogin.so
+
+
+FROM ubuntu:18.04
+
+ARG EC_HOST VPN_TYPE=EC_GUI http_proxy https_proxy CHROMIUM
+ARG UBUNTU_ARCHIVE_MIRROR
+ARG UBUNTU_SECURITY_MIRROR
+ARG UBUNTU_PORTS_MIRROR
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+COPY ["./build-scripts/get-echost-names.sh", "./build-scripts/add-qemu.sh", "/tmp/build-scripts/"]
+
+RUN sed -i \
+        -e "s|http://archive.ubuntu.com/ubuntu|${UBUNTU_ARCHIVE_MIRROR}|g" \
+        -e "s|http://security.ubuntu.com/ubuntu|${UBUNTU_SECURITY_MIRROR}|g" \
+        -e "s|http://ports.ubuntu.com/ubuntu-ports|${UBUNTU_PORTS_MIRROR}|g" \
+        /etc/apt/sources.list && \
+    . /tmp/build-scripts/get-echost-names.sh && \
+    . /tmp/build-scripts/add-qemu.sh && \
+    if [ "ATRUST" = "$VPN_TYPE" ]; then \
+        extra_pkgs="libssl1.1 libatk-bridge2.0-0 libgtk-3-0 libgbm1 libqt5x11extras5 procps \
+                    libqt5core5a libqt5network5 libqt5widgets5 libldap-2.4-2 stalonetray"; \
+    else \
+        extra_pkgs="libgtk2.0-0 libdbus-glib-1-2 libgconf-2-4 libnspr4:$EC_HOST libnss3:$EC_HOST"; \
+    fi && \
+    i=0 && \
+    while :; do \
+        i=$((i + 1)) && \
+        apt-get -o Acquire::Retries=5 update && \
+        apt-get -o Acquire::Retries=5 install -y --no-install-recommends --no-install-suggests \
+            libx11-xcb1 libnss3 libasound2 iptables xclip libxtst6 \
+            dante-server tigervnc-standalone-server tigervnc-common psmisc flwm x11-utils \
+            busybox iproute2 tinyproxy libxss1 ca-certificates pcmanfm \
+            fonts-wqy-microhei socat wget $qemu_pkgs $extra_pkgs && \
+        break; \
+        if [ "$i" -ge 10 ]; then \
+            echo "ERROR: apt-get failed too many times." >&2; \
+            exit 1; \
+        fi; \
+        echo "WARNING: apt-get failed, retrying... ($i/10)" >&2; \
+        sleep 2; \
+    done && \
+    if [ -n "$CHROMIUM" ]; then \
+        j=0 && \
+        while :; do \
+            j=$((j + 1)) && \
+            apt-get -o Acquire::Retries=5 update && \
+            apt-get -o Acquire::Retries=5 install -y --no-install-recommends --no-install-suggests chromium-browser && \
+            break; \
+            if [ "$j" -ge 10 ]; then \
+                echo "ERROR: installing chromium-browser failed too many times." >&2; \
+                exit 1; \
+            fi; \
+            echo "WARNING: installing chromium-browser failed, retrying... ($j/10)" >&2; \
+            sleep 2; \
+        done; \
+    fi && \
+    rm -rf /var/lib/apt/lists/*
+
+RUN if command -v chromium-browser >/dev/null 2>&1 && ! command -v chromium >/dev/null 2>&1; then \
+        ln -sf "$(command -v chromium-browser)" /usr/bin/chromium; \
+    fi && \
+    if command -v chromium >/dev/null 2>&1; then \
+        ln -sf "$(command -v chromium)" /usr/bin/x-www-browser; \
+        ln -sf "$(command -v chromium)" /usr/bin/www-browser; \
+        ln -sf "$(command -v chromium)" /usr/bin/gnome-www-browser; \
+    fi
+
+RUN if [ -x /usr/bin/xdg-open ] && [ ! -e /usr/bin/xdg-open.real ]; then \
+        cp -a /usr/bin/xdg-open /usr/bin/xdg-open.real; \
+    fi
+
+RUN groupadd -r socks && useradd -r -g socks socks
+
+COPY --from=build /out/ /
+
+COPY ["./build-scripts/install-vpn-gui.sh", "./build-scripts/mk-qemu-wrapper.sh", "/tmp/build-scripts/"]
+
+COPY ./docker-root-preinst /
+
+ARG VPN_URL ELECTRON_URL USE_VPN_ELECTRON VPN_DEB_PATH
+
+RUN /tmp/build-scripts/install-vpn-gui.sh
+
+COPY ./docker-root /
+
+ENV PING_INTERVAL=1800
+
+VOLUME /root/
+
+CMD ["start.sh"]

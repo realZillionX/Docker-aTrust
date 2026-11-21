@@ -1,0 +1,27 @@
+#!/bin/sh
+sysctl_real=""
+for candidate in /sbin/sysctl.real /usr/sbin/sysctl.real; do
+	if [ -x "$candidate" ]; then
+		sysctl_real="$candidate"
+		break
+	fi
+done
+
+if [ -z "$sysctl_real" ]; then
+	sysctl_real="$(command -v sysctl.real 2>/dev/null || true)"
+fi
+
+if [ -z "$sysctl_real" ] || [ ! -x "$sysctl_real" ]; then
+	echo "ERROR: sysctl.real not found. You may need to rebuild the image." >&2
+	exit 127
+fi
+
+if [ x"-w net.ipv4.conf.utun7.route_localnet=1" = x"$*" ]; then
+	echo "WARNING: you are calling the sysctl wrapper with the workaround to make aTrust happy when it calls \`sysctl -w net.ipv4.conf.utun7.route_localnet=1\`." >&2
+	if [ 1 = "$("$sysctl_real" -n net.ipv4.conf.utun7.route_localnet 2>/dev/null)" ] || "$sysctl_real" "$@" ; then
+		echo "Fortunately it succeeded or has been set." >&2
+		exit 0
+	fi
+	exit 1
+fi
+exec "$sysctl_real" "$@"
